@@ -4,6 +4,14 @@ Send and receive emails via the Microsoft 365 Graph API instead of SMTP/IMAP.
 
 Replace traditional SMTP sending and IMAP fetching with direct Microsoft Graph API calls. No SMTP relay configuration, no IMAP polling — just a single Azure AD app registration.
 
+## Screenshots
+
+![Admin Overview](https://github.com/user-attachments/assets/63ece9f8-e1f1-454b-b1ff-7419f96425da)
+*Admin overview — fetch/send status, secret expiry, retry queue, and mailbox usage at a glance*
+
+![Connection Settings](https://github.com/user-attachments/assets/ff1dd66e-2ba5-4e2f-87d3-a2ef66e9bd4b)
+*Incoming connection settings — Azure credentials, folder selection, fetch mode, and post-fetch actions*
+
 ## Features
 
 - **Send via Graph API** — bypasses SMTP entirely, supports attachments up to 150MB via chunked upload
