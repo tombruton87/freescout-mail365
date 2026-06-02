@@ -1,0 +1,13 @@
+{
+    "name": "freescout-modules/mail365",
+    "description": "Send and receive emails via the Microsoft 365 Graph API instead of SMTP/IMAP.",
+    "type": "freescout-module",
+    "license": "AGPL-3.0-or-later",
+    "require": {},
+    "autoload": {
+        "psr-4": {
+            "Modules\\Mail365\\": ""
+        }
+    },
+    "minimum-stability": "stable"
+}

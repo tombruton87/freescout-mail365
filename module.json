@@ -1,0 +1,21 @@
+{
+    "name": "Mail365",
+    "alias": "mail365",
+    "description": "Send and receive emails via the Microsoft 365 Graph API instead of SMTP/IMAP.",
+    "keywords": ["freescout", "microsoft", "365", "graph", "mail"],
+    "homepage": "",
+    "version": "1.0.0",
+    "requiredAppVersion": "1.8.100",
+    "license": "AGPL-3.0",
+    "img": "/modules/mail365/img/logo.png",
+    "active": 1,
+    "order": 0,
+    "providers": [
+        "Modules\\Mail365\\Providers\\Mail365ServiceProvider"
+    ],
+    "aliases": {},
+    "files": [
+        "start.php"
+    ],
+    "requires": []
+}
