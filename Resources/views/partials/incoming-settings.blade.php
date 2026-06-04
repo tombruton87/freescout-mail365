@@ -35,14 +35,70 @@
         </div>
     </div>
 
-    {{-- Client Secret --}}
+    {{-- Auth Type --}}
     <div class="form-group">
-        <label for="m365_in_client_secret" class="col-sm-2 control-label">Client Secret</label>
+        <label class="col-sm-2 control-label">Auth Method</label>
         <div class="col-sm-6">
-            <input id="m365_in_client_secret" type="password" class="form-control input-sized"
-                name="m365_client_secret" value="" maxlength="255" autocomplete="new-password"
-                @if($hasSecret) placeholder="••••••••••••••••" @endif>
-            <p class="form-help">Azure AD &rarr; App registrations &rarr; Your app &rarr; Certificates &amp; secrets</p>
+            <div class="radio">
+                <label>
+                    <input type="radio" name="m365_auth_type" value="secret"{{ ($authType ?? 'secret') === 'secret' ? ' checked' : '' }}>
+                    Client Secret
+                </label>
+            </div>
+            <div class="radio">
+                <label>
+                    <input type="radio" name="m365_auth_type" value="certificate"{{ ($authType ?? 'secret') === 'certificate' ? ' checked' : '' }}>
+                    Certificate
+                </label>
+            </div>
+        </div>
+    </div>
+
+    {{-- Client Secret (shown when auth_type=secret) --}}
+    <div id="m365-in-secret-fields"{{ ($authType ?? 'secret') !== 'secret' ? ' style=display:none;' : '' }}>
+        <div class="form-group">
+            <label for="m365_in_client_secret" class="col-sm-2 control-label">Client Secret</label>
+            <div class="col-sm-6">
+                <input id="m365_in_client_secret" type="password" class="form-control input-sized"
+                    name="m365_client_secret" value="" maxlength="255" autocomplete="new-password"
+                    @if($hasSecret) placeholder="••••••••••••••••" @endif>
+                <p class="form-help">Azure AD &rarr; App registrations &rarr; Your app &rarr; Certificates &amp; secrets</p>
+            </div>
+        </div>
+    </div>
+
+    {{-- Certificate (shown when auth_type=certificate) --}}
+    <div id="m365-in-cert-fields"{{ ($authType ?? 'secret') !== 'certificate' ? ' style=display:none;' : '' }}>
+        <div class="form-group">
+            <label class="col-sm-2 control-label">Certificate</label>
+            <div class="col-sm-6">
+                <div id="m365-cert-upload-area">
+                    <input type="file" id="m365_certificate_file" accept=".pem" style="display:none;">
+                    <button type="button" id="m365-upload-cert-btn" class="btn btn-default" data-loading-text="Uploading&hellip;">
+                        <i class="glyphicon glyphicon-upload"></i> Upload PEM File
+                    </button>
+                    <span id="m365-cert-upload-result" class="margin-left"></span>
+                </div>
+                <div id="m365-cert-info" style="margin-top:8px;{{ empty($certificateThumbprint) ? 'display:none;' : '' }}">
+                    <div class="well well-sm" style="margin-bottom:6px;font-size:12px;">
+                        <strong>Thumbprint:</strong> <code id="m365-cert-thumbprint">{{ $certificateThumbprint ?? '' }}</code>
+                        @if(!empty($certificateExpiry))
+                        <br>
+                        <strong>Expires:</strong>
+                        <span id="m365-cert-expiry-text">
+                            {{ $certificateExpiry['date'] ?? '' }}
+                            @if(isset($certificateExpiry['days_left']))
+                                ({{ $certificateExpiry['days_left'] }} day{{ $certificateExpiry['days_left'] !== 1 ? 's' : '' }} remaining)
+                            @endif
+                        </span>
+                        @endif
+                    </div>
+                    <button type="button" id="m365-remove-cert-btn" class="btn btn-danger btn-xs">
+                        <i class="glyphicon glyphicon-trash"></i> Remove Certificate
+                    </button>
+                </div>
+                <p class="form-help">Upload a PEM file containing both the private key and the X.509 certificate. The certificate's public key must be uploaded to your Azure app registration under Certificates &amp; secrets &rarr; Certificates. Max 32 KB.</p>
+            </div>
         </div>
     </div>
 
@@ -155,8 +211,8 @@
         </div>
     </div>
 
-    {{-- Secret Expiry Date --}}
-    <div class="form-group">
+    {{-- Secret Expiry Date (only for secret auth) --}}
+    <div class="form-group" id="m365-secret-expiry-group"{{ ($authType ?? 'secret') !== 'secret' ? ' style=display:none;' : '' }}>
         <label for="m365_secret_expiry_date" class="col-sm-2 control-label">Secret Expiry</label>
         <div class="col-sm-6">
             <div class="form-inline">
@@ -180,8 +236,8 @@
         </div>
     </div>
 
-    {{-- Expiry Alert --}}
-    <div class="form-group">
+    {{-- Expiry Alert (only for secret auth) --}}
+    <div class="form-group" id="m365-expiry-alert-group"{{ ($authType ?? 'secret') !== 'secret' ? ' style=display:none;' : '' }}>
         <label class="col-sm-2 control-label">Expiry Alert</label>
         <div class="col-sm-6">
             <div class="checkbox">

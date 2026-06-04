@@ -60,13 +60,24 @@ class Mail365FetchCommand extends Command
 
         foreach ($mailboxes as $mailbox) {
             $meta = $mailbox->getMeta(Mail365ServiceProvider::META_KEY, []);
-            $tenantId     = $meta['tenant_id'] ?? '';
-            $clientId     = $meta['client_id'] ?? '';
-            $clientSecret = !empty($meta['client_secret']) ? \Helper::decrypt($meta['client_secret']) : '';
+            $tenantId       = $meta['tenant_id'] ?? '';
+            $clientId       = $meta['client_id'] ?? '';
+            $authType       = $meta['auth_type'] ?? 'secret';
+            $clientSecret   = '';
+            $certificatePem = '';
 
-            if (!$tenantId || !$clientId || !$clientSecret) {
-                $this->error('['.date('Y-m-d H:i:s').'] Mail365: missing Azure credentials for ' . $mailbox->email);
-                continue;
+            if ($authType === 'certificate') {
+                $certificatePem = !empty($meta['certificate_pem']) ? \Helper::decrypt($meta['certificate_pem']) : '';
+                if (!$tenantId || !$clientId || !$certificatePem) {
+                    $this->error('['.date('Y-m-d H:i:s').'] Mail365: missing Azure certificate for ' . $mailbox->email);
+                    continue;
+                }
+            } else {
+                $clientSecret = !empty($meta['client_secret']) ? \Helper::decrypt($meta['client_secret']) : '';
+                if (!$tenantId || !$clientId || !$clientSecret) {
+                    $this->error('['.date('Y-m-d H:i:s').'] Mail365: missing Azure credentials for ' . $mailbox->email);
+                    continue;
+                }
             }
 
             if (!\Eventy::filter('mailbox.in_active', null, $mailbox)) {
@@ -80,7 +91,7 @@ class Mail365FetchCommand extends Command
 
             $this->client = new Mail365Client($tenantId, $clientId, $clientSecret, function($msg) {
                 $this->line($msg);
-            });
+            }, $authType, $certificatePem);
 
             $fetchCommand->mailbox = $mailbox;
             $fetchCommand->extra_import = [];
@@ -285,14 +296,26 @@ class Mail365FetchCommand extends Command
                 }
             }
 
-            $expiry = $client->checkSecretExpiry();
-            if ($expiry) {
-                $meta['secret_expiry'] = $expiry;
-            }
+            $authType = $meta['auth_type'] ?? 'secret';
+            if ($authType === 'certificate') {
+                $certPem = !empty($meta['certificate_pem']) ? \Helper::decrypt($meta['certificate_pem']) : '';
+                if ($certPem) {
+                    $certExpiry = \Modules\Mail365\Helpers\Mail365Client::extractCertificateExpiry($certPem);
+                    if ($certExpiry) {
+                        $meta['certificate_expiry'] = $certExpiry;
+                        $this->maybeCreateExpiryAlert($mailbox, $meta, $certExpiry);
+                    }
+                }
+            } else {
+                $expiry = $client->checkSecretExpiry();
+                if ($expiry) {
+                    $meta['secret_expiry'] = $expiry;
+                }
 
-            $effectiveExpiry = $expiry ?: $this->buildExpiryFromManualDate($meta);
-            if ($effectiveExpiry) {
-                $this->maybeCreateExpiryAlert($mailbox, $meta, $effectiveExpiry);
+                $effectiveExpiry = $expiry ?: $this->buildExpiryFromManualDate($meta);
+                if ($effectiveExpiry) {
+                    $this->maybeCreateExpiryAlert($mailbox, $meta, $effectiveExpiry);
+                }
             }
 
             $this->addFetchLog($meta, 'success', $fetched, $folderNames, null, $startTime);

@@ -31,18 +31,31 @@ class Mail365RetrySendsCommand extends Command
 
         if (empty($queue)) return;
 
-        $tenantId     = $meta['tenant_id'] ?? '';
-        $clientId     = $meta['client_id'] ?? '';
-        $clientSecret = !empty($meta['client_secret']) ? \Helper::decrypt($meta['client_secret']) : '';
+        $tenantId       = $meta['tenant_id'] ?? '';
+        $clientId       = $meta['client_id'] ?? '';
+        $authType       = $meta['auth_type'] ?? 'secret';
+        $clientSecret   = '';
+        $certificatePem = '';
 
-        if (!$tenantId || !$clientId || !$clientSecret) {
-            $this->error("Mailbox {$mailbox->email}: missing Azure credentials, clearing retry queue");
-            $meta['retry_queue'] = [];
-            $mailbox->setMetaParam(Mail365ServiceProvider::META_KEY, $meta, true);
-            return;
+        if ($authType === 'certificate') {
+            $certificatePem = !empty($meta['certificate_pem']) ? \Helper::decrypt($meta['certificate_pem']) : '';
+            if (!$tenantId || !$clientId || !$certificatePem) {
+                $this->error("Mailbox {$mailbox->email}: missing Azure certificate, clearing retry queue");
+                $meta['retry_queue'] = [];
+                $mailbox->setMetaParam(Mail365ServiceProvider::META_KEY, $meta, true);
+                return;
+            }
+        } else {
+            $clientSecret = !empty($meta['client_secret']) ? \Helper::decrypt($meta['client_secret']) : '';
+            if (!$tenantId || !$clientId || !$clientSecret) {
+                $this->error("Mailbox {$mailbox->email}: missing Azure credentials, clearing retry queue");
+                $meta['retry_queue'] = [];
+                $mailbox->setMetaParam(Mail365ServiceProvider::META_KEY, $meta, true);
+                return;
+            }
         }
 
-        $client = new Mail365Client($tenantId, $clientId, $clientSecret);
+        $client = new Mail365Client($tenantId, $clientId, $clientSecret, null, $authType, $certificatePem);
         $remaining = [];
         $succeeded = 0;
         $failed = 0;

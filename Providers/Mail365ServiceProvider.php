@@ -63,20 +63,33 @@ class Mail365ServiceProvider extends ServiceProvider
             }
 
             $meta = $mailbox->getMeta(self::META_KEY, []);
-            $tenantId     = $meta['tenant_id'] ?? '';
-            $clientId     = $meta['client_id'] ?? '';
-            $clientSecret = !empty($meta['client_secret']) ? \Helper::decrypt($meta['client_secret']) : '';
+            $tenantId       = $meta['tenant_id'] ?? '';
+            $clientId       = $meta['client_id'] ?? '';
+            $authType       = $meta['auth_type'] ?? 'secret';
+            $clientSecret   = '';
+            $certificatePem = '';
 
-            if (!$tenantId || !$clientId || !$clientSecret) {
-                \Log::error('Mail365: missing Azure credentials for mailbox ' . $mailbox->email);
-                return;
+            if ($authType === 'certificate') {
+                $certificatePem = !empty($meta['certificate_pem']) ? \Helper::decrypt($meta['certificate_pem']) : '';
+                if (!$tenantId || !$clientId || !$certificatePem) {
+                    \Log::error('Mail365: missing Azure certificate for mailbox ' . $mailbox->email);
+                    return;
+                }
+            } else {
+                $clientSecret = !empty($meta['client_secret']) ? \Helper::decrypt($meta['client_secret']) : '';
+                if (!$tenantId || !$clientId || !$clientSecret) {
+                    \Log::error('Mail365: missing Azure credentials for mailbox ' . $mailbox->email);
+                    return;
+                }
             }
 
             $transport = new Graph365Transport(
                 $tenantId,
                 $clientId,
                 $clientSecret,
-                $mailbox->email
+                $mailbox->email,
+                $authType,
+                $certificatePem
             );
 
             $mailer = new \Swift_Mailer($transport);
@@ -98,11 +111,17 @@ class Mail365ServiceProvider extends ServiceProvider
         \Eventy::addFilter('mailbox.in_active', function ($active, $mailbox) {
             if ($mailbox->in_protocol == self::IN_PROTOCOL_GRAPH365) {
                 $meta = $mailbox->getMeta(self::META_KEY, []);
-                $hasSecret = !empty($meta['client_secret']) && \Helper::decrypt($meta['client_secret']);
-                if (!empty($meta['tenant_id']) && !empty($meta['client_id']) && $hasSecret) {
-                    return true;
+                $authType = $meta['auth_type'] ?? 'secret';
+
+                if (empty($meta['tenant_id']) || empty($meta['client_id'])) {
+                    return false;
                 }
-                return false;
+
+                if ($authType === 'certificate') {
+                    return !empty($meta['certificate_pem']) && \Helper::decrypt($meta['certificate_pem']);
+                }
+
+                return !empty($meta['client_secret']) && \Helper::decrypt($meta['client_secret']);
             }
             return $active;
         }, 20, 2);
@@ -158,9 +177,15 @@ class Mail365ServiceProvider extends ServiceProvider
                 $clientId = $existing['client_id'] ?? '';
             }
 
+            $authType = trim((string) $request->input('m365_auth_type', $existing['auth_type'] ?? 'secret'));
+            if (!in_array($authType, ['secret', 'certificate'])) {
+                $authType = 'secret';
+            }
+
             $meta = array_merge($existing, [
                 'tenant_id'                   => $tenantId,
                 'client_id'                   => $clientId,
+                'auth_type'                   => $authType,
                 'fetch_mode'                  => $fetchMode,
                 'post_fetch_action'           => $postAction,
                 'post_fetch_move_folder'      => substr($moveFolderId, 0, 500),
@@ -188,25 +213,28 @@ class Mail365ServiceProvider extends ServiceProvider
             if ($expiryAlertDays < 1) $expiryAlertDays = 30;
 
             echo \View::make('mail365::partials/incoming-settings', [
-                'tenantId'           => $meta['tenant_id'] ?? '',
-                'clientId'           => $meta['client_id'] ?? '',
-                'hasSecret'          => !empty($meta['client_secret']),
-                'sharedEmail'        => $meta['shared_mailbox_email'] ?? '',
-                'fetchMode'          => $meta['fetch_mode'] ?? 'all',
-                'postAction'         => $meta['post_fetch_action'] ?? 'none',
-                'moveFolderId'       => $meta['post_fetch_move_folder'] ?? '',
-                'moveFolderName'     => $meta['post_fetch_move_folder_name'] ?? '',
-                'fetchFolders'       => $meta['fetch_folders'] ?? [],
-                'expiryDate'         => $expiryDate,
-                'daysLeft'           => $expiryDate ? (int) ceil((strtotime($expiryDate) - time()) / 86400) : 0,
-                'expiryAlertEnabled' => !empty($meta['expiry_alert_enabled']),
-                'expiryAlertDays'    => $expiryAlertDays,
-                'lastRun'            => $meta['last_fetch_run'] ?? null,
-                'lastCount'          => $meta['last_fetch_count'] ?? null,
-                'lastSuccess'        => $meta['last_fetch_success'] ?? null,
-                'lastError'          => $meta['last_fetch_error'] ?? null,
-                'lastErrorAt'        => $meta['last_fetch_error_at'] ?? null,
-                'quotaUsage'         => $meta['quota_usage'] ?? null,
+                'tenantId'              => $meta['tenant_id'] ?? '',
+                'clientId'              => $meta['client_id'] ?? '',
+                'authType'              => $meta['auth_type'] ?? 'secret',
+                'hasSecret'             => !empty($meta['client_secret']),
+                'certificateThumbprint' => $meta['certificate_thumbprint'] ?? '',
+                'certificateExpiry'     => $meta['certificate_expiry'] ?? null,
+                'sharedEmail'           => $meta['shared_mailbox_email'] ?? '',
+                'fetchMode'             => $meta['fetch_mode'] ?? 'all',
+                'postAction'            => $meta['post_fetch_action'] ?? 'none',
+                'moveFolderId'          => $meta['post_fetch_move_folder'] ?? '',
+                'moveFolderName'        => $meta['post_fetch_move_folder_name'] ?? '',
+                'fetchFolders'          => $meta['fetch_folders'] ?? [],
+                'expiryDate'            => $expiryDate,
+                'daysLeft'              => $expiryDate ? (int) ceil((strtotime($expiryDate) - time()) / 86400) : 0,
+                'expiryAlertEnabled'    => !empty($meta['expiry_alert_enabled']),
+                'expiryAlertDays'       => $expiryAlertDays,
+                'lastRun'               => $meta['last_fetch_run'] ?? null,
+                'lastCount'             => $meta['last_fetch_count'] ?? null,
+                'lastSuccess'           => $meta['last_fetch_success'] ?? null,
+                'lastError'             => $meta['last_fetch_error'] ?? null,
+                'lastErrorAt'           => $meta['last_fetch_error_at'] ?? null,
+                'quotaUsage'            => $meta['quota_usage'] ?? null,
             ])->render();
         });
 
@@ -236,11 +264,17 @@ class Mail365ServiceProvider extends ServiceProvider
                 $meta = $mailbox->getMeta(self::META_KEY, []);
                 if (empty($meta['tenant_id'])) continue;
 
+                $authType = $meta['auth_type'] ?? 'secret';
                 $expiryDate = null;
-                if (!empty($meta['secret_expiry']['date'])) {
-                    $expiryDate = $meta['secret_expiry']['date'];
-                } elseif (!empty($meta['secret_expiry_date'])) {
-                    $expiryDate = $meta['secret_expiry_date'];
+
+                if ($authType === 'certificate') {
+                    $expiryDate = $meta['certificate_expiry']['date'] ?? null;
+                } else {
+                    if (!empty($meta['secret_expiry']['date'])) {
+                        $expiryDate = $meta['secret_expiry']['date'];
+                    } elseif (!empty($meta['secret_expiry_date'])) {
+                        $expiryDate = $meta['secret_expiry_date'];
+                    }
                 }
 
                 if (!$expiryDate) continue;

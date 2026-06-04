@@ -22,27 +22,48 @@ class Mail365Controller extends Controller
 
         $existing = $mailbox->getMeta(Mail365ServiceProvider::META_KEY, []);
 
+        $authType = trim((string) $request->input('auth_type', $existing['auth_type'] ?? 'secret'));
+        if (!in_array($authType, ['secret', 'certificate'])) {
+            $authType = 'secret';
+        }
+
         $newSecret = substr(trim((string) $request->input('client_secret', '')), 0, 255);
 
         $meta = array_merge($existing, [
-            'tenant_id'  => trim((string) $request->input('tenant_id', '')),
-            'client_id'  => trim((string) $request->input('client_id', '')),
+            'tenant_id' => trim((string) $request->input('tenant_id', '')),
+            'client_id' => trim((string) $request->input('client_id', '')),
+            'auth_type' => $authType,
         ]);
 
         if ($newSecret) {
             $meta['client_secret'] = \Helper::encrypt($newSecret);
         } elseif ($request->input('keep_secret') && empty($existing['client_secret'])) {
-            // No saved secret and none provided
             $meta['client_secret'] = '';
         }
 
-        $hasSecret = !empty($meta['client_secret']);
-
-        if (!$meta['tenant_id'] || !$meta['client_id'] || !$hasSecret) {
+        if (!$meta['tenant_id'] || !$meta['client_id']) {
             return response()->json([
                 'status' => 'error',
-                'msg'    => __('All fields are required: Tenant ID, Client ID, and Client Secret.'),
+                'msg'    => __('Tenant ID and Client ID are required.'),
             ]);
+        }
+
+        if ($authType === 'secret') {
+            $hasSecret = !empty($meta['client_secret']);
+            if (!$hasSecret) {
+                return response()->json([
+                    'status' => 'error',
+                    'msg'    => __('All fields are required: Tenant ID, Client ID, and Client Secret.'),
+                ]);
+            }
+        } elseif ($authType === 'certificate') {
+            $hasCert = !empty($meta['certificate_pem']);
+            if (!$hasCert) {
+                return response()->json([
+                    'status' => 'error',
+                    'msg'    => __('Please upload a certificate before saving.'),
+                ]);
+            }
         }
 
         if (!preg_match(self::UUID_PATTERN, $meta['tenant_id']) || !preg_match(self::UUID_PATTERN, $meta['client_id'])) {
@@ -65,15 +86,76 @@ class Mail365Controller extends Controller
         $meta = $mailbox->getMeta(Mail365ServiceProvider::META_KEY, []);
 
         return response()->json([
-            'status'             => 'success',
-            'tenant_id'          => $meta['tenant_id'] ?? '',
-            'client_id'          => $meta['client_id'] ?? '',
-            'has_secret'         => !empty($meta['client_secret']),
-            'secret_expiry'      => $meta['secret_expiry'] ?? null,
-            'last_send_success'  => $meta['last_send_success'] ?? null,
-            'last_send_error'    => $meta['last_send_error'] ?? null,
-            'last_send_error_at' => $meta['last_send_error_at'] ?? null,
+            'status'                  => 'success',
+            'tenant_id'               => $meta['tenant_id'] ?? '',
+            'client_id'               => $meta['client_id'] ?? '',
+            'auth_type'               => $meta['auth_type'] ?? 'secret',
+            'has_secret'              => !empty($meta['client_secret']),
+            'has_certificate'         => !empty($meta['certificate_pem']),
+            'certificate_thumbprint'  => $meta['certificate_thumbprint'] ?? '',
+            'certificate_expiry'      => $meta['certificate_expiry'] ?? null,
+            'secret_expiry'           => $meta['secret_expiry'] ?? null,
+            'last_send_success'       => $meta['last_send_success'] ?? null,
+            'last_send_error'         => $meta['last_send_error'] ?? null,
+            'last_send_error_at'      => $meta['last_send_error_at'] ?? null,
         ]);
+    }
+
+    public function uploadCertificate($mailbox_id, Request $request)
+    {
+        $mailbox = Mailbox::findOrFail($mailbox_id);
+        $this->authorize('admin', $mailbox);
+
+        if (!$request->hasFile('certificate') || !$request->file('certificate')->isValid()) {
+            return response()->json(['status' => 'error', 'msg' => __('No valid file uploaded.')]);
+        }
+
+        $file = $request->file('certificate');
+
+        if ($file->getSize() > 32768) {
+            return response()->json(['status' => 'error', 'msg' => __('File too large. Maximum 32 KB.')]);
+        }
+
+        $pem = file_get_contents($file->getRealPath());
+
+        $errors = Mail365Client::validateCertificatePem($pem);
+        if ($errors) {
+            return response()->json(['status' => 'error', 'msg' => implode(' ', $errors)]);
+        }
+
+        $thumbprint = Mail365Client::extractCertificateThumbprint($pem);
+        $expiry = Mail365Client::extractCertificateExpiry($pem);
+
+        $meta = $mailbox->getMeta(Mail365ServiceProvider::META_KEY, []);
+        $meta['auth_type'] = 'certificate';
+        $meta['certificate_pem'] = \Helper::encrypt($pem);
+        $meta['certificate_thumbprint'] = $thumbprint;
+        if ($expiry) {
+            $meta['certificate_expiry'] = $expiry;
+        }
+        $mailbox->setMetaParam(Mail365ServiceProvider::META_KEY, $meta, true);
+
+        return response()->json([
+            'status'      => 'success',
+            'msg'         => __('Certificate uploaded and validated.'),
+            'thumbprint'  => $thumbprint,
+            'expiry'      => $expiry,
+        ]);
+    }
+
+    public function removeCertificate($mailbox_id, Request $request)
+    {
+        $mailbox = Mailbox::findOrFail($mailbox_id);
+        $this->authorize('admin', $mailbox);
+
+        $meta = $mailbox->getMeta(Mail365ServiceProvider::META_KEY, []);
+        $meta['auth_type'] = 'secret';
+        $meta['certificate_pem'] = '';
+        $meta['certificate_thumbprint'] = '';
+        $meta['certificate_expiry'] = null;
+        $mailbox->setMetaParam(Mail365ServiceProvider::META_KEY, $meta, true);
+
+        return response()->json(['status' => 'success', 'msg' => __('Certificate removed.')]);
     }
 
     public function testConnection($mailbox_id, Request $request)
@@ -84,17 +166,37 @@ class Mail365Controller extends Controller
         $tenantId     = trim((string) $request->input('tenant_id', ''));
         $clientId     = trim((string) $request->input('client_id', ''));
         $clientSecret = trim((string) $request->input('client_secret', ''));
+        $authType     = trim((string) $request->input('auth_type', 'secret'));
 
-        // Fall back to saved secret if not provided
-        if (!$clientSecret) {
-            $existing = $mailbox->getMeta(Mail365ServiceProvider::META_KEY, []);
+        $existing = $mailbox->getMeta(Mail365ServiceProvider::META_KEY, []);
+
+        if (!$clientSecret && $authType === 'secret') {
             $clientSecret = !empty($existing['client_secret']) ? \Helper::decrypt($existing['client_secret']) : '';
         }
 
-        if (!$tenantId || !$clientId || !$clientSecret) {
+        $certificatePem = '';
+        if ($authType === 'certificate') {
+            $certificatePem = !empty($existing['certificate_pem']) ? \Helper::decrypt($existing['certificate_pem']) : '';
+        }
+
+        if (!$tenantId || !$clientId) {
             return response()->json([
                 'status' => 'error',
-                'msg'    => __('Please fill in all three fields before testing.'),
+                'msg'    => __('Please fill in Tenant ID and Client ID before testing.'),
+            ]);
+        }
+
+        if ($authType === 'secret' && !$clientSecret) {
+            return response()->json([
+                'status' => 'error',
+                'msg'    => __('Please provide a Client Secret before testing.'),
+            ]);
+        }
+
+        if ($authType === 'certificate' && !$certificatePem) {
+            return response()->json([
+                'status' => 'error',
+                'msg'    => __('Please upload a certificate before testing.'),
             ]);
         }
 
@@ -105,7 +207,7 @@ class Mail365Controller extends Controller
             ]);
         }
 
-        $client = new Mail365Client($tenantId, $clientId, $clientSecret);
+        $client = new Mail365Client($tenantId, $clientId, $clientSecret, null, $authType, $certificatePem);
 
         try {
             $client->getAccessToken();
@@ -161,18 +263,14 @@ class Mail365Controller extends Controller
         $this->authorize('admin', $mailbox);
 
         $meta = $mailbox->getMeta(Mail365ServiceProvider::META_KEY, []);
-        $tenantId     = $meta['tenant_id'] ?? '';
-        $clientId     = $meta['client_id'] ?? '';
-        $clientSecret = !empty($meta['client_secret']) ? \Helper::decrypt($meta['client_secret']) : '';
+        $client = self::buildClientFromMeta($meta);
 
-        if (!$tenantId || !$clientId || !$clientSecret) {
+        if (!$client) {
             return response()->json([
                 'status' => 'error',
                 'msg'    => __('Azure credentials are not configured.'),
             ]);
         }
-
-        $client = new Mail365Client($tenantId, $clientId, $clientSecret);
 
         try {
             $client->getAccessToken();
@@ -354,15 +452,11 @@ class Mail365Controller extends Controller
         $this->authorize('admin', $mailbox);
 
         $meta = $mailbox->getMeta(Mail365ServiceProvider::META_KEY, []);
-        $tenantId     = $meta['tenant_id'] ?? '';
-        $clientId     = $meta['client_id'] ?? '';
-        $clientSecret = !empty($meta['client_secret']) ? \Helper::decrypt($meta['client_secret']) : '';
+        $client = self::buildClientFromMeta($meta);
 
-        if (!$tenantId || !$clientId || !$clientSecret) {
+        if (!$client) {
             return response()->json(['status' => 'error', 'msg' => 'Azure credentials not configured.']);
         }
-
-        $client = new Mail365Client($tenantId, $clientId, $clientSecret);
 
         try {
             $client->getAccessToken();
@@ -389,15 +483,11 @@ class Mail365Controller extends Controller
         $this->authorize('admin', $mailbox);
 
         $meta = $mailbox->getMeta(Mail365ServiceProvider::META_KEY, []);
-        $tenantId     = $meta['tenant_id'] ?? '';
-        $clientId     = $meta['client_id'] ?? '';
-        $clientSecret = !empty($meta['client_secret']) ? \Helper::decrypt($meta['client_secret']) : '';
+        $client = self::buildClientFromMeta($meta);
 
-        if (!$tenantId || !$clientId || !$clientSecret) {
+        if (!$client) {
             return response()->json(['status' => 'error', 'msg' => 'Azure credentials not configured.']);
         }
-
-        $client = new Mail365Client($tenantId, $clientId, $clientSecret);
 
         try {
             $client->getAccessToken();
@@ -437,11 +527,17 @@ class Mail365Controller extends Controller
             $meta = $mailbox->getMeta(Mail365ServiceProvider::META_KEY, []);
             if (empty($meta['tenant_id'])) continue;
 
-            $expiryDate = $meta['secret_expiry']['date'] ?? ($meta['secret_expiry_date'] ?? null);
+            $authType = $meta['auth_type'] ?? 'secret';
+            if ($authType === 'certificate') {
+                $expiryDate = $meta['certificate_expiry']['date'] ?? null;
+            } else {
+                $expiryDate = $meta['secret_expiry']['date'] ?? ($meta['secret_expiry_date'] ?? null);
+            }
             $daysLeft = $expiryDate ? (int) ceil((strtotime($expiryDate) - time()) / 86400) : null;
 
             $rows[] = [
                 'mailbox'            => $mailbox,
+                'auth_type'          => $authType,
                 'last_fetch_success' => $meta['last_fetch_success'] ?? null,
                 'last_fetch_error'   => $meta['last_fetch_error'] ?? null,
                 'last_fetch_error_at' => $meta['last_fetch_error_at'] ?? null,
@@ -456,6 +552,29 @@ class Mail365Controller extends Controller
         }
 
         return view('mail365::overview', ['rows' => $rows]);
+    }
+
+    protected static function buildClientFromMeta(array $meta)
+    {
+        $tenantId     = $meta['tenant_id'] ?? '';
+        $clientId     = $meta['client_id'] ?? '';
+        $authType     = $meta['auth_type'] ?? 'secret';
+        $clientSecret = '';
+        $certificatePem = '';
+
+        if ($authType === 'certificate') {
+            $certificatePem = !empty($meta['certificate_pem']) ? \Helper::decrypt($meta['certificate_pem']) : '';
+            if (!$tenantId || !$clientId || !$certificatePem) {
+                return null;
+            }
+        } else {
+            $clientSecret = !empty($meta['client_secret']) ? \Helper::decrypt($meta['client_secret']) : '';
+            if (!$tenantId || !$clientId || !$clientSecret) {
+                return null;
+            }
+        }
+
+        return new Mail365Client($tenantId, $clientId, $clientSecret, null, $authType, $certificatePem);
     }
 
     /**

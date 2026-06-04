@@ -135,11 +135,48 @@
                 '</div>' +
             '</div>' +
             '<div class="form-group">' +
-                '<label for="m365_client_secret" class="col-sm-2 control-label">Client Secret</label>' +
+                '<label class="col-sm-2 control-label">Auth Method</label>' +
                 '<div class="col-sm-6">' +
-                    '<input id="m365_client_secret" type="password" class="form-control input-sized" ' +
-                    'name="m365_client_secret" value="" maxlength="255" autocomplete="new-password">' +
-                    '<p class="form-help">Azure AD → App registrations → Your app → Certificates &amp; secrets</p>' +
+                    '<div class="radio"><label>' +
+                        '<input type="radio" name="m365_out_auth_type" value="secret" checked> Client Secret' +
+                    '</label></div>' +
+                    '<div class="radio"><label>' +
+                        '<input type="radio" name="m365_out_auth_type" value="certificate"> Certificate' +
+                    '</label></div>' +
+                '</div>' +
+            '</div>' +
+            '<div id="m365-out-secret-fields">' +
+                '<div class="form-group">' +
+                    '<label for="m365_client_secret" class="col-sm-2 control-label">Client Secret</label>' +
+                    '<div class="col-sm-6">' +
+                        '<input id="m365_client_secret" type="password" class="form-control input-sized" ' +
+                        'name="m365_client_secret" value="" maxlength="255" autocomplete="new-password">' +
+                        '<p class="form-help">Azure AD → App registrations → Your app → Certificates &amp; secrets</p>' +
+                    '</div>' +
+                '</div>' +
+            '</div>' +
+            '<div id="m365-out-cert-fields" style="display:none;">' +
+                '<div class="form-group">' +
+                    '<label class="col-sm-2 control-label">Certificate</label>' +
+                    '<div class="col-sm-6">' +
+                        '<div id="m365-out-cert-upload-area">' +
+                            '<input type="file" id="m365_out_certificate_file" accept=".pem" style="display:none;">' +
+                            '<button type="button" id="m365-out-upload-cert-btn" class="btn btn-default" data-loading-text="Uploading…">' +
+                                '<i class="glyphicon glyphicon-upload"></i> Upload PEM File' +
+                            '</button>' +
+                            '<span id="m365-out-cert-upload-result" class="margin-left"></span>' +
+                        '</div>' +
+                        '<div id="m365-out-cert-info" style="display:none;margin-top:8px;">' +
+                            '<div class="well well-sm" style="margin-bottom:6px;font-size:12px;">' +
+                                '<strong>Thumbprint:</strong> <code id="m365-out-cert-thumbprint"></code>' +
+                                '<br><strong>Expires:</strong> <span id="m365-out-cert-expiry-text"></span>' +
+                            '</div>' +
+                            '<button type="button" id="m365-out-remove-cert-btn" class="btn btn-danger btn-xs">' +
+                                '<i class="glyphicon glyphicon-trash"></i> Remove Certificate' +
+                            '</button>' +
+                        '</div>' +
+                        '<p class="form-help">Upload a PEM file containing both the private key and the X.509 certificate. Max 32 KB.</p>' +
+                    '</div>' +
                 '</div>' +
             '</div>' +
             '<div class="form-group">' +
@@ -212,9 +249,25 @@
                 if (response.status === 'success') {
                     $('#m365_tenant_id').val(response.tenant_id || '');
                     $('#m365_client_id').val(response.client_id || '');
+
+                    var authType = response.auth_type || 'secret';
+                    $('input[name="m365_out_auth_type"][value="' + authType + '"]').prop('checked', true);
+                    toggleOutgoingAuthFields();
+
                     if (response.has_secret) {
                         $('#m365_client_secret').attr('placeholder', '••••••••••••••••');
                         $('#m365-shared-creds-note').show();
+                    }
+                    if (response.has_certificate) {
+                        $('#m365-out-cert-thumbprint').text(response.certificate_thumbprint || '');
+                        if (response.certificate_expiry) {
+                            var expiryText = response.certificate_expiry.date || '';
+                            if (response.certificate_expiry.days_left !== undefined) {
+                                expiryText += ' (' + response.certificate_expiry.days_left + ' day' + (response.certificate_expiry.days_left !== 1 ? 's' : '') + ' remaining)';
+                            }
+                            $('#m365-out-cert-expiry-text').text(expiryText);
+                        }
+                        $('#m365-out-cert-info').show();
                     }
                     if (response.secret_expiry) {
                         showSecretExpiryRow('#m365-out-secret-expiry', '#m365-out-secret-expiry-text', response.secret_expiry);
@@ -227,18 +280,121 @@
         });
     }
 
+    function getOutgoingAuthType() {
+        return $('input[name="m365_out_auth_type"]:checked').val() || 'secret';
+    }
+
+    function toggleOutgoingAuthFields() {
+        var authType = getOutgoingAuthType();
+        if (authType === 'certificate') {
+            $('#m365-out-secret-fields').hide();
+            $('#m365-out-cert-fields').show();
+        } else {
+            $('#m365-out-secret-fields').show();
+            $('#m365-out-cert-fields').hide();
+        }
+    }
+
+    function bindOutgoingCertificate() {
+        $(document).on('click', '#m365-out-upload-cert-btn', function() {
+            $('#m365_out_certificate_file').click();
+        });
+
+        $(document).on('change', '#m365_out_certificate_file', function() {
+            var file = this.files[0];
+            if (!file) return;
+
+            var btn = $('#m365-out-upload-cert-btn');
+            btn.button('loading');
+            $('#m365-out-cert-upload-result').empty();
+
+            var formData = new FormData();
+            formData.append('certificate', file);
+            formData.append('_token', $('input[name="_token"]').val());
+
+            $.ajax({
+                url: '/mail365/certificate/' + getMailboxId(),
+                type: 'POST',
+                data: formData,
+                processData: false,
+                contentType: false,
+                dataType: 'json',
+                success: function(response) {
+                    if (response.status === 'success') {
+                        showResult('#m365-out-cert-upload-result', 'success', response.msg);
+                        $('#m365-out-cert-thumbprint').text(response.thumbprint || '');
+                        if (response.expiry) {
+                            var expiryText = response.expiry.date || '';
+                            if (response.expiry.days_left !== undefined) {
+                                expiryText += ' (' + response.expiry.days_left + ' day' + (response.expiry.days_left !== 1 ? 's' : '') + ' remaining)';
+                            }
+                            $('#m365-out-cert-expiry-text').text(expiryText);
+                        }
+                        $('#m365-out-cert-info').show();
+                    } else {
+                        showResult('#m365-out-cert-upload-result', 'error', response.msg);
+                    }
+                },
+                error: function(xhr) {
+                    var detail = '';
+                    try {
+                        var json = JSON.parse(xhr.responseText);
+                        detail = json.msg || json.message || '';
+                    } catch(e) {
+                        detail = xhr.status + ' ' + xhr.statusText;
+                    }
+                    showResult('#m365-out-cert-upload-result', 'error', 'Upload failed: ' + detail);
+                },
+                complete: function() {
+                    btn.button('reset');
+                    $('#m365_out_certificate_file').val('');
+                }
+            });
+        });
+
+        $(document).on('click', '#m365-out-remove-cert-btn', function() {
+            if (!confirm('Remove the certificate? You will need to upload a new one to authenticate.')) return;
+
+            var btn = $(this);
+            btn.prop('disabled', true);
+
+            $.ajax({
+                url: '/mail365/certificate/' + getMailboxId() + '/remove',
+                type: 'POST',
+                data: { _token: $('input[name="_token"]').val() },
+                dataType: 'json',
+                success: function(response) {
+                    if (response.status === 'success') {
+                        $('#m365-out-cert-info').hide();
+                        $('#m365-out-cert-thumbprint').text('');
+                        $('#m365-out-cert-expiry-text').text('');
+                        showResult('#m365-out-cert-upload-result', 'success', response.msg);
+                    }
+                },
+                complete: function() {
+                    btn.prop('disabled', false);
+                }
+            });
+        });
+    }
+
     function bindTestButton() {
         $(document).on('click', '#m365-test-btn', function() {
             var btn = $(this);
             btn.button('loading');
             $('#m365-test-result').empty();
 
+            var authType = getOutgoingAuthType();
             var data = {
                 tenant_id: $('#m365_tenant_id').val(),
                 client_id: $('#m365_client_id').val(),
-                client_secret: $('#m365_client_secret').val(),
+                auth_type: authType,
                 _token: $('input[name="_token"]').val()
             };
+
+            if (authType === 'secret') {
+                data.client_secret = $('#m365_client_secret').val();
+            }
 
             $.ajax({
                 url: '/mail365/test/' + getMailboxId(),
@@ -280,6 +436,7 @@
             var tenantId = $('#m365_tenant_id').val();
             var clientId = $('#m365_client_id').val();
             var clientSecret = $('#m365_client_secret').val();
+            var authType = getOutgoingAuthType();
 
             if (!tenantId || !clientId) {
                 e.preventDefault();
@@ -301,13 +458,14 @@
             var data = {
                 tenant_id: tenantId,
                 client_id: clientId,
+                auth_type: authType,
                 _token: $('input[name="_token"]').val()
             };
-            if (clientSecret) {
+            if (authType === 'secret' && clientSecret) {
                 data.client_secret = clientSecret;
             }
 
-            if (!clientSecret) {
+            if (authType === 'secret' && !clientSecret) {
                 data.keep_secret = '1';
             }
 
@@ -444,19 +602,132 @@
         );
     }
 
+    function getIncomingAuthType() {
+        return $('input[name="m365_auth_type"]:checked').val() || 'secret';
+    }
+
+    function toggleIncomingAuthFields() {
+        var authType = getIncomingAuthType();
+        if (authType === 'certificate') {
+            $('#m365-in-secret-fields').hide();
+            $('#m365-in-cert-fields').show();
+            $('#m365-secret-expiry-group').hide();
+            $('#m365-expiry-alert-group').hide();
+        } else {
+            $('#m365-in-secret-fields').show();
+            $('#m365-in-cert-fields').hide();
+            $('#m365-secret-expiry-group').show();
+            $('#m365-expiry-alert-group').show();
+        }
+    }
+
+    function bindIncomingAuthTypeToggle() {
+        $(document).on('change', 'input[name="m365_auth_type"]', function() {
+            toggleIncomingAuthFields();
+        });
+    }
+
+    function bindCertificateUpload() {
+        $(document).on('click', '#m365-upload-cert-btn', function() {
+            $('#m365_certificate_file').click();
+        });
+
+        $(document).on('change', '#m365_certificate_file', function() {
+            var file = this.files[0];
+            if (!file) return;
+
+            var btn = $('#m365-upload-cert-btn');
+            btn.button('loading');
+            $('#m365-cert-upload-result').empty();
+
+            var formData = new FormData();
+            formData.append('certificate', file);
+            formData.append('_token', $('input[name="_token"]').val());
+
+            $.ajax({
+                url: '/mail365/certificate/' + getMailboxId(),
+                type: 'POST',
+                data: formData,
+                processData: false,
+                contentType: false,
+                dataType: 'json',
+                success: function(response) {
+                    if (response.status === 'success') {
+                        showResult('#m365-cert-upload-result', 'success', response.msg);
+                        $('#m365-cert-thumbprint').text(response.thumbprint || '');
+                        if (response.expiry) {
+                            var expiryText = response.expiry.date;
+                            if (response.expiry.days_left !== undefined) {
+                                expiryText += ' (' + response.expiry.days_left + ' day' + (response.expiry.days_left !== 1 ? 's' : '') + ' remaining)';
+                            }
+                            $('#m365-cert-expiry-text').text(expiryText);
+                        }
+                        $('#m365-cert-info').show();
+                    } else {
+                        showResult('#m365-cert-upload-result', 'error', response.msg);
+                    }
+                },
+                error: function(xhr) {
+                    var detail = '';
+                    try {
+                        var json = JSON.parse(xhr.responseText);
+                        detail = json.msg || json.message || '';
+                    } catch(e) {
+                        detail = xhr.status + ' ' + xhr.statusText;
+                    }
+                    showResult('#m365-cert-upload-result', 'error', 'Upload failed: ' + detail);
+                },
+                complete: function() {
+                    btn.button('reset');
+                    $('#m365_certificate_file').val('');
+                }
+            });
+        });
+
+        $(document).on('click', '#m365-remove-cert-btn', function() {
+            if (!confirm('Remove the certificate? You will need to upload a new one to authenticate.')) return;
+
+            var btn = $(this);
+            btn.prop('disabled', true);
+
+            $.ajax({
+                url: '/mail365/certificate/' + getMailboxId() + '/remove',
+                type: 'POST',
+                data: { _token: $('input[name="_token"]').val() },
+                dataType: 'json',
+                success: function(response) {
+                    if (response.status === 'success') {
+                        $('#m365-cert-info').hide();
+                        $('#m365-cert-thumbprint').text('');
+                        $('#m365-cert-expiry-text').text('');
+                        showResult('#m365-cert-upload-result', 'success', response.msg);
+                    }
+                },
+                complete: function() {
+                    btn.prop('disabled', false);
+                }
+            });
+        });
+    }
+
     function bindIncomingTestButton() {
         $(document).on('click', '#m365-in-test-btn', function() {
             var btn = $(this);
             btn.button('loading');
             $('#m365-in-test-result').empty();
 
+            var authType = getIncomingAuthType();
             var data = {
                 tenant_id: $('#m365_in_tenant_id').val(),
                 client_id: $('#m365_in_client_id').val(),
-                client_secret: $('#m365_in_client_secret').val(),
+                auth_type: authType,
                 verify_email: $('#m365_shared_mailbox_email').val() || '',
                 _token: $('input[name="_token"]').val()
             };
+
+            if (authType === 'secret') {
+                data.client_secret = $('#m365_in_client_secret').val();
+            }
 
             $.ajax({
                 url: '/mail365/test/' + getMailboxId(),
@@ -1168,6 +1439,11 @@
             bindFormSubmit();
             bindSendLog();
             bindRetryQueue();
+            bindOutgoingCertificate();
+
+            $(document).on('change', 'input[name="m365_out_auth_type"]', function() {
+                toggleOutgoingAuthFields();
+            });
 
             var currentMethod = getCurrentMethod();
             if (currentMethod == MAIL365_METHOD) {
@@ -1188,6 +1464,8 @@
         // Incoming page
         if (isIncomingPage()) {
             toggleIncomingSettings();
+            bindIncomingAuthTypeToggle();
+            bindCertificateUpload();
             bindIncomingTestButton();
             bindFolderPicker();
             bindPostFetchAction();

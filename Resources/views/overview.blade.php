@@ -16,7 +16,7 @@
                     <th>{{ __('Mailbox') }}</th>
                     <th>{{ __('Fetch Status') }}</th>
                     <th>{{ __('Send Status') }}</th>
-                    <th>{{ __('Secret Expiry') }}</th>
+                    <th>{{ __('Auth / Expiry') }}</th>
                     <th>{{ __('Retry Queue') }}</th>
                     <th>{{ __('Mailbox Usage') }}</th>
                     <th></th>
@@ -57,7 +57,9 @@
                         @endif
                     </td>
                     <td>
+                        <small class="label label-default">{{ $row['auth_type'] === 'certificate' ? 'Cert' : 'Secret' }}</small>
                         @if($row['secret_expiry_date'])
+                            <br>
                             @if($row['secret_days_left'] < 0)
                                 <span class="text-danger"><i class="glyphicon glyphicon-exclamation-sign"></i> <strong>{{ __('Expired') }}</strong></span>
                             @elseif($row['secret_days_left'] <= 14)
@@ -69,7 +71,7 @@
                             @endif
                             <br><small class="text-muted">{{ $row['secret_expiry_date'] }}</small>
                         @else
-                            <span class="text-muted">-</span>
+                            <br><span class="text-muted">-</span>
                         @endif
                     </td>
                     <td>

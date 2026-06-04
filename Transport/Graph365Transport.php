@@ -17,10 +17,10 @@ class Graph365Transport implements Swift_Transport
     const LARGE_ATTACHMENT_THRESHOLD = 3000000;
     const UPLOAD_CHUNK_SIZE = 3932160;
 
-    public function __construct($tenantId, $clientId, $clientSecret, $senderEmail)
+    public function __construct($tenantId, $clientId, $clientSecret, $senderEmail, $authType = 'secret', $certificatePem = '')
     {
         $this->senderEmail = $senderEmail;
-        $this->client = new Mail365Client($tenantId, $clientId, $clientSecret);
+        $this->client = new Mail365Client($tenantId, $clientId, $clientSecret, null, $authType, $certificatePem);
     }
 
     public function isStarted()

@@ -7,14 +7,18 @@ class Mail365Client
     protected $tenantId;
     protected $clientId;
     protected $clientSecret;
+    protected $authType;
+    protected $certificatePem;
     protected $logger;
     protected static $tokenCache = [];
 
-    public function __construct($tenantId, $clientId, $clientSecret, callable $logger = null)
+    public function __construct($tenantId, $clientId, $clientSecret, ?callable $logger = null, $authType = 'secret', $certificatePem = '')
     {
         $this->tenantId = $tenantId;
         $this->clientId = $clientId;
         $this->clientSecret = $clientSecret;
+        $this->authType = $authType;
+        $this->certificatePem = $certificatePem;
         $this->logger = $logger;
     }
 
@@ -72,14 +76,26 @@ class Mail365Client
 
         $url = "https://login.microsoftonline.com/" . urlencode($this->tenantId) . "/oauth2/v2.0/token";
 
-        $result = $this->curlWithRetry($url, [
-            CURLOPT_POST           => true,
-            CURLOPT_POSTFIELDS     => http_build_query([
+        if ($this->authType === 'certificate' && $this->certificatePem) {
+            $postFields = http_build_query([
+                'client_id'             => $this->clientId,
+                'client_assertion_type' => 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+                'client_assertion'      => $this->buildClientAssertion($url, $exceptionClass),
+                'scope'                 => 'https://graph.microsoft.com/.default',
+                'grant_type'            => 'client_credentials',
+            ]);
+        } else {
+            $postFields = http_build_query([
                 'client_id'     => $this->clientId,
                 'client_secret' => $this->clientSecret,
                 'scope'         => 'https://graph.microsoft.com/.default',
                 'grant_type'    => 'client_credentials',
-            ]),
+            ]);
+        }
+
+        $result = $this->curlWithRetry($url, [
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => $postFields,
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT        => 30,
             CURLOPT_SSL_VERIFYPEER => true,
@@ -100,6 +116,121 @@ class Mail365Client
         ];
 
         return $data['access_token'];
+    }
+
+    protected function buildClientAssertion($tokenEndpoint, $exceptionClass = \Exception::class)
+    {
+        $certResource = openssl_x509_read($this->certificatePem);
+        if (!$certResource) {
+            throw new $exceptionClass('Invalid certificate: unable to parse the X.509 certificate from PEM.');
+        }
+
+        $certDer = '';
+        openssl_x509_export($certResource, $certPemExported);
+        $certDer = base64_decode(
+            str_replace(['-----BEGIN CERTIFICATE-----', '-----END CERTIFICATE-----', "\n", "\r"], '', $certPemExported)
+        );
+        $thumbprint = self::base64UrlEncode(sha1($certDer, true));
+
+        $privateKey = openssl_pkey_get_private($this->certificatePem);
+        if (!$privateKey) {
+            throw new $exceptionClass('Invalid certificate: unable to extract the private key from PEM.');
+        }
+
+        $now = time();
+        $header = ['alg' => 'RS256', 'typ' => 'JWT', 'x5t' => $thumbprint];
+        $payload = [
+            'aud' => $tokenEndpoint,
+            'iss' => $this->clientId,
+            'sub' => $this->clientId,
+            'jti' => bin2hex(random_bytes(16)),
+            'nbf' => $now,
+            'exp' => $now + 600,
+        ];
+
+        $segments = [
+            self::base64UrlEncode(json_encode($header)),
+            self::base64UrlEncode(json_encode($payload)),
+        ];
+
+        $signingInput = implode('.', $segments);
+        $signature = '';
+
+        if (!openssl_sign($signingInput, $signature, $privateKey, OPENSSL_ALGO_SHA256)) {
+            throw new $exceptionClass('Failed to sign the client assertion JWT.');
+        }
+
+        $segments[] = self::base64UrlEncode($signature);
+
+        return implode('.', $segments);
+    }
+
+    public static function base64UrlEncode($data)
+    {
+        return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
+    }
+
+    public static function extractCertificateThumbprint($pem)
+    {
+        $certResource = openssl_x509_read($pem);
+        if (!$certResource) {
+            return null;
+        }
+
+        openssl_x509_export($certResource, $certPemExported);
+        $certDer = base64_decode(
+            str_replace(['-----BEGIN CERTIFICATE-----', '-----END CERTIFICATE-----', "\n", "\r"], '', $certPemExported)
+        );
+
+        return strtoupper(sha1($certDer));
+    }
+
+    public static function extractCertificateExpiry($pem)
+    {
+        $certResource = openssl_x509_read($pem);
+        if (!$certResource) {
+            return null;
+        }
+
+        $certData = openssl_x509_parse($certResource);
+        if (empty($certData['validTo_time_t'])) {
+            return null;
+        }
+
+        $endTs = (int) $certData['validTo_time_t'];
+        $daysLeft = (int) ceil(($endTs - time()) / 86400);
+
+        $subject = $certData['subject']['CN'] ?? '';
+
+        return [
+            'timestamp'    => $endTs,
+            'date'         => date('Y-m-d', $endTs),
+            'days_left'    => $daysLeft,
+            'display_name' => $subject ? "Certificate: {$subject}" : 'Certificate',
+        ];
+    }
+
+    public static function validateCertificatePem($pem)
+    {
+        $errors = [];
+
+        $certResource = openssl_x509_read($pem);
+        if (!$certResource) {
+            $errors[] = 'No valid X.509 certificate found in the PEM file.';
+        }
+
+        $privateKey = openssl_pkey_get_private($pem);
+        if (!$privateKey) {
+            $errors[] = 'No valid private key found in the PEM file.';
+        }
+
+        if ($certResource && $privateKey) {
+            if (!openssl_x509_check_private_key($certResource, $privateKey)) {
+                $errors[] = 'The private key does not match the certificate.';
+            }
+        }
+
+        return $errors;
     }
 
     public function graphGet($url, $exceptionClass = \Exception::class)
