@@ -1474,6 +1474,18 @@
             bindMailboxBrowser();
             convertTimestamps();
 
+            // Set dummy IMAP values before submit so FreeScout core accepts the save
+            var incomingForm = $('select[name="in_protocol"]').closest('form');
+            incomingForm.on('submit', function() {
+                if ($('select[name="in_protocol"]').val() == MAIL365_IN_PROTOCOL) {
+                    $('input[name="in_server"]').val('graph.microsoft.com');
+                    $('input[name="in_port"]').val('443');
+                    $('input[name="in_username"]').val('graph-api');
+                    $('input[name="in_password"]').val('graph-api');
+                    $('select[name="in_encryption"]').val('ssl');
+                }
+            });
+
             $(document).on('change', '#m365_secret_expiry_date', function() {
                 updateExpiryStatus();
             });

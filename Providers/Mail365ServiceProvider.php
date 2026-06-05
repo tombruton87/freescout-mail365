@@ -140,6 +140,11 @@ class Mail365ServiceProvider extends ServiceProvider
                 return;
             }
 
+            $mailbox->in_server = 'graph.microsoft.com';
+            $mailbox->in_port = 443;
+            $mailbox->in_username = 'graph-api';
+            $mailbox->in_password = 'graph-api';
+
             $existing = $mailbox->getMeta(self::META_KEY, []);
 
             $fetchMode = trim((string) $request->input('m365_fetch_mode', 'all'));
